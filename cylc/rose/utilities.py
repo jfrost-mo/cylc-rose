@@ -24,8 +24,7 @@ from pathlib import Path
 import re
 import shlex
 import shutil
-from subprocess import PIPE, Popen
-import sys
+import subprocess
 from typing import (
     TYPE_CHECKING,
     Any,
@@ -95,16 +94,11 @@ class InvalidDefineError(CylcError):
 
 
 class SubshellError(CylcError):
-    def __init__(self, string_template, subshell, stderr):
+    def __init__(self, string_template):
         self.string_template = string_template
-        self.subshell = subshell
-        self.stderr = stderr
 
     def __str__(self):
-        return (
-            f'Could not evaluate "{self.string_template}".'
-            f'\nError processing "{self.subshell}": {self.stderr}'
-        )
+        return f'Could not evaluate "{self.string_template}".'
 
 
 def process_config(
@@ -1091,65 +1085,31 @@ def sanitize_opts(opts):
     return opts
 
 
-# ReGeX for extracting $(subshells) out of arbitrary strings. This is
-# imperfect, it doesn't handle nested subshells or `subshells` and that's ok.
-RE_SUBSHELL = re.compile(
-    r'''
-        \$\(
-          (
-            (?:
-              [^\)\$]
-              |
-              \$[^\(]
-            )+
-          )
-        \)
-    ''',
-    re.X,
-)
-
-
 def _cli_template(string: str, env: dict[str, str] | None = None) -> str:
-    """Process a substring template.
+    """Evaluates any subshells in a string value.
 
     * Plain strings are passed straight through.
-    * Subshells with $(...) syntax are executed as subprocesses and replaced in
-      the string template with any stdout they return.
-    * Subprocess stderr goes to the process's stderr.
-    * Any non-zero subprocess return code will cause a ValueError to be raised.
+    * Shell syntax, such as $(...) subshells, are evaluated by bash.
+    * Subprocess stderr goes to the process's stderr and errors are raised.
+    * Subprocesses are *not* run as login shells.
 
     Raises:
-        ValueError:
+        SubshellError:
             If any subprocess returns a non-zero code.
-
-            Note, subprocesses are *not* run as
-            `bash -l -c 'set -euo pipefail'`.
-
+            The evaluation is run under ``bash -euo pipefail``.
     """
-    def _subshell(substring):
-        # run a subshell in a subprocess
-        proc = Popen(
-            substring,
-            stdout=PIPE,
-            stderr=PIPE,
-            text=True,
-            shell=True,
-            env=env,
+    # Skip evaluating if there is nothing the shell would execute.
+    if not any(char in string for char in "$();<>|&`"):
+        return string
+
+    command = ("bash", "-euo", "pipefail", "-c", f"echo {string}")
+    try:
+        proc = subprocess.run(
+            command, stdout=subprocess.PIPE, text=True, check=True, env=env
         )
-        out, err = proc.communicate()
-        if proc.returncode:
-            # subshell returned non-zero => raise error
-            raise SubshellError(string, substring, err)
-        if err := err.strip():
-            # subshell wrote to stderr => forward to sys.stderr
-            print(err, file=sys.stderr, end='')
-        return out.strip()
-
-    parts = RE_SUBSHELL.split(string)
-    for ind in range(1, len(parts), 2):
-        parts[ind] = _subshell(parts[ind])
-
-    return ''.join(parts)
+    except subprocess.CalledProcessError as err:
+        raise SubshellError(string) from err
+    return proc.stdout.strip()
 
 
 def set_workflow_and_run_name(
