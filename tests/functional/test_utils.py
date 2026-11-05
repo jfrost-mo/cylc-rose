@@ -151,22 +151,28 @@ def test_cli_template(capsys):
     assert _cli_template('a-$(echo b)-c') == 'a-b-c'
     assert _cli_template('$(echo a)-$(echo b)-$(echo c)') == 'a-b-c'
 
-    # `subshells` - not supported
-    assert _cli_template('a-`echo b`-c') == 'a-`echo b`-c'
+    # `subshells` - supported
+    assert _cli_template('a-`echo b`-c') == 'a-b-c'
 
-    # subshell nesting is not supported
-    assert _cli_template('a-$(echo $(echo b))-c') == 'a-$(echo b)-c'
+    # subshell nesting is supported
+    assert _cli_template('a-$(echo $(echo b))-c') == 'a-b-c'
 
-    # environment variables are not supported
-    assert _cli_template('$USER') == '$USER'
+    # environment variables are supported
+    assert _cli_template('$USER') != '$USER'
 
-    # except in subshells
+    # Including within subshells
     assert _cli_template('$(echo $USER)') == os.environ['USER']
 
     # non-zero return code produces errors
     assert _cli_template('$(true)') == ''
-    with pytest.raises(SubshellError, match=r'.*\$\(false\).*'):
+    with pytest.raises(SubshellError, match=r'\$\(false\)'):
         _cli_template('$(false)')
+    # Early errors in pipelines produce errors.
+    with pytest.raises(SubshellError, match=r'\$\(false \| true\)'):
+        _cli_template('$(false | true)')
+    # Undefined variables produce errors.
+    with pytest.raises(SubshellError, match=r'\${UNDEFINED_VARIABLE}'):
+        _cli_template('${UNDEFINED_VARIABLE}')
 
     # stderr from subshells goes to stderr - stdout is captured
     capsys.readouterr()
